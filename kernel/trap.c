@@ -10,6 +10,8 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern unsigned char ref_count[];  // 页面的引用计数
+extern struct spinlock ref_lock;    // 包含上面数组的锁
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -67,11 +69,22 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 15){
+    pte_t *pte = walk(p->pagetable, r_stval(), 0);
+		if(pte == 0 || (*pte & PTE_RSW) == 0){
+			p->killed = 1;
+			printf("%p\n", *pte);
+			printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+			printf("%s,       sepc=%p stval=%p\n",p->name, r_sepc(), r_stval());
+		}
+		else{
+			page_w_fault(pte, p, 0);	
+		}
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
-  }
+  } 
 
   if(p->killed)
     exit(-1);
@@ -218,3 +231,37 @@ devintr()
   }
 }
 
+
+int 
+page_w_fault(pte_t *pte, struct proc* p, int sign){
+	uint64 pa = PTE2PA(*pte);
+	acquire(&ref_lock);
+	if(ref_count[GO(pa)] <= 0){
+		release(&ref_lock);
+		panic("ref error");
+	}
+	if(ref_count[GO(pa)] == 1){
+		*pte |= PTE_W;
+		*pte &= ~PTE_RSW;
+		release(&ref_lock);
+	}
+	else{
+		uint64 paddr = (uint64)kalloc();
+		if(paddr == 0){
+			printf("now more memory\n");
+			if(sign == 1){
+				release(&ref_lock);
+				return -1;
+			}
+			else
+			  p->killed = 1;
+		}
+		else{
+			*pte = PA2PTE(paddr) | PTE_W | PTE_R | PTE_X | PTE_U | PTE_V;
+			memmove((void*)paddr, (void*)pa, PGSIZE);
+			ref_count[GO(pa)]--;
+		}
+		release(&ref_lock);
+	}
+	return 0;
+}

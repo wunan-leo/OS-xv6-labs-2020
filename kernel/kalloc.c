@@ -23,6 +23,9 @@ struct {
   struct run *freelist;
 } kmem;
 
+unsigned char ref_count[32*1024];  // 页面的引用计数
+struct spinlock ref_lock;    // 包含上面数组的锁
+
 void
 kinit()
 {
@@ -47,6 +50,17 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  
+  uint64 cou = GO((uint64)pa);
+	acquire(&ref_lock);
+	if(ref_count[cou] >= 2){
+		ref_count[cou]--;
+		release(&ref_lock);
+		return;
+	}
+	ref_count[cou] = 0;
+	release(&ref_lock);
+
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
@@ -77,6 +91,11 @@ kalloc(void)
   release(&kmem.lock);
 
   if(r)
+  {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    uint64 cou = GO((uint64)r);
+		ref_count[cou]++;
+  }
+    
   return (void*)r;
 }
