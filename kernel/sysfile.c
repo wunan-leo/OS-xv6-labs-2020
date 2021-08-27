@@ -484,3 +484,95 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+   int len;
+   int prot,flags,fd;
+   struct file *f;
+   if(argint(1, &len) < 0 ||  argint(2, &prot) < 0 || argint(3, &flags) < 0  || argfd(4, &fd,&f) < 0  )
+    return -1;
+
+   // if file is read-only,but map it as writable.return fail
+   if(!f->writable && (prot & PROT_WRITE) && (flags & MAP_SHARED ) )
+   {
+      return -1;
+   }
+
+   struct proc* p=myproc();
+   for(uint i=0;i<MAXVMA;i++)
+   { 
+      struct VMA *v=&p->vma[i]	;   
+      if(!v->used) //find an unsed vma
+      {
+         // store relative auguments
+	    v->used=1;
+        v->addr=p->sz;//use p->sz to p->sz+len to map the file
+	    len= PGROUNDUP(len);// map的最小单位是PGSIZE
+	    p->sz+=len;
+	    v->len=len;
+	    v->prot=prot;
+	    v->flags=flags;
+	    v->f= filedup(f);//increase the file's ref cnt
+	    v->start_point=0;//staring point in f to map is 0
+	    return v->addr;
+      }
+   }
+   
+   return -1;
+}
+
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;   
+  int close=0;
+  if(argaddr(0, &addr) < 0 ||  argint(1, &len) < 0 )
+    return -1;
+   struct proc* p=myproc();
+   for(uint i=0;i<MAXVMA;i++)
+   { 
+      struct VMA *v=&p->vma[i];
+      //only unmap at start,end or the whole region
+      if(v->used && addr>=v->addr && addr <=v->addr+v->len)
+      {
+	 uint64 npages=0;  
+         uint off=v->start_point;	 
+         if(addr==v->addr) // unmap at start
+	 {
+	     if(len >= v->len) //unmap whole region
+	     {
+		 len=v->len;      
+	         v->used=0;
+		 close=1;
+	     }
+	     else//unmap from start but not whole region
+	     {
+		v->addr+=len;     
+		v->start_point=len;//update start point at which to map
+	     }
+	 }
+	 len=PGROUNDUP(len);
+      npages=len/PGSIZE; 
+	 v->len-=len;
+	 p->sz-=len;
+
+         if(v->flags & MAP_SHARED) // need to write back pages
+	 {
+	    filewriteoff(v->f, addr , len , off );
+	 }	 
+          
+
+         uvmunmap(p->pagetable,PGROUNDDOWN(addr),npages,0);
+         // decrease ref cnt of v->f 
+	 if(close) fileclose(v->f);//注意先写文件再fileclose 否则 f->ref=0 就没办法写了
+
+	 return 0;
+      }
+         
+   }
+  return -1;
+}
