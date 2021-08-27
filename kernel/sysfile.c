@@ -296,7 +296,7 @@ sys_open(void)
     return -1;
 
   begin_op();
-
+  
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -307,6 +307,37 @@ sys_open(void)
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
+    }
+    if (!(omode & O_NOFOLLOW)) {
+      int cnt = 10;
+      int len = 0;
+      while (cnt-- > 0) {
+        ilock(ip);
+        if (ip->type == T_SYMLINK) {
+          if (readi(ip, 0, (uint64)&len, 0, sizeof(len)) < sizeof(len)) {
+            iunlockput(ip);
+            end_op();
+            return -1;
+          }
+          if (readi(ip, 0, (uint64)path, sizeof(len), len + 1) < len + 1) {
+            iunlockput(ip);
+            end_op();
+            return -1;
+          }
+          iunlockput(ip);
+        } else {
+          iunlock(ip);
+          break;
+        }
+        if((ip = namei(path)) == 0){
+          end_op();
+          return -1;
+        }
+      }
+      if (cnt <= 0) {
+        end_op();
+        return -1;
+      }
     }
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
@@ -482,5 +513,40 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+uint64
+sys_symlink(void) {
+
+  char target[MAXPATH], path[MAXPATH];;
+  struct inode *ip;
+
+  if(argstr(0, target, MAXPATH) < 0|| argstr(1, path, MAXPATH) < 0) {
+    return -1;
+  }
+
+  begin_op();
+
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  int len = strlen(target);
+  // write target path len
+  if(writei(ip, 0, (uint64)&len, 0, sizeof(len)) < sizeof(len)) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  // write target path
+  if(writei(ip, 0, (uint64)target, sizeof(len), len + 1) < 0) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }
